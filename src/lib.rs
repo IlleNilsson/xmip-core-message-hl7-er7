@@ -80,7 +80,7 @@ impl Shape for Er7 {
     fn shape(&self, stream: &Stream) -> Result<Shaped, ShapeError> {
         let delimiters = delimiters(stream.bytes())?;
         let segments = segment::segments(stream.bytes(), &delimiters)
-            .map_err(|stop| stop.refused("hl7-er7"))?;
+            .map_err(|stop| ShapeError::refused("hl7-er7", stop))?;
         let message_type =
             segment::first(&segments, "MSH").and_then(|msh| message_type(msh, delimiters));
         let media = stream.media_type().unwrap_or("x-application/hl7-v2+er7");
