@@ -70,7 +70,7 @@ impl Shape for Er7 {
         &["x-application/hl7-v2+er7", "application/hl7-v2+er7"]
     }
 
-    fn recognises(&self, bytes: &[u8]) -> bool {
+    fn recognizes(&self, bytes: &[u8]) -> bool {
         bytes.starts_with(b"MSH")
             && bytes
                 .get(3)
@@ -174,18 +174,18 @@ PV1|1|I|W1^B2^1\r";
     }
 
     #[test]
-    fn the_shape_claims_the_hl7_types_and_recognises_msh_followed_by_a_separator() {
+    fn the_shape_claims_the_hl7_types_and_recognizes_msh_followed_by_a_separator() {
         assert_eq!(Er7.technology(), "hl7-er7");
         assert_eq!(
             Er7.media_types(),
             &["x-application/hl7-v2+er7", "application/hl7-v2+er7"]
         );
-        assert!(Er7.recognises(b"MSH|^~\\&|"));
-        assert!(Er7.recognises(b"MSH#*~\\&#"));
-        assert!(!Er7.recognises(b"MSH1|"));
-        assert!(!Er7.recognises(b"MSH "));
-        assert!(!Er7.recognises(b"MSH"));
-        assert!(!Er7.recognises(b"UNB+"));
+        assert!(Er7.recognizes(b"MSH|^~\\&|"));
+        assert!(Er7.recognizes(b"MSH#*~\\&#"));
+        assert!(!Er7.recognizes(b"MSH1|"));
+        assert!(!Er7.recognizes(b"MSH "));
+        assert!(!Er7.recognizes(b"MSH"));
+        assert!(!Er7.recognizes(b"UNB+"));
 
         let shapes: [&dyn Shape; 1] = [&Er7];
         let by_media = message::choose(&shapes, &stream(b"x", Some("X-Application/HL7-v2+ER7")));
