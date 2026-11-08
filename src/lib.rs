@@ -78,8 +78,9 @@ impl Shape for Er7 {
     }
 
     fn shape(&self, stream: &Stream) -> Result<Shaped, ShapeError> {
-        let delimiters = delimiters(stream.bytes())?;
-        let segments = segment::segments(stream.bytes(), &delimiters)
+        let bytes = message::loaded(self.technology(), stream)?;
+        let delimiters = delimiters(bytes)?;
+        let segments = segment::segments(bytes, &delimiters)
             .map_err(|stop| ShapeError::refused("hl7-er7", stop))?;
         let message_type =
             segment::first(&segments, "MSH").and_then(|msh| message_type(msh, delimiters));
@@ -188,10 +189,15 @@ PV1|1|I|W1^B2^1\r";
         assert!(!Er7.recognizes(b"UNB+"));
 
         let shapes: [&dyn Shape; 1] = [&Er7];
-        let by_media = message::choose(&shapes, &stream(b"x", Some("X-Application/HL7-v2+ER7")));
+        let by_media = message::choose(&shapes, &stream(b"x", Some("X-Application/HL7-v2+ER7")))
+            .expect("held");
         assert_eq!(by_media.map(Shape::technology), Some("hl7-er7"));
-        let by_look = message::choose(&shapes, &stream(ADMIT, None));
+        let by_look = message::choose(&shapes, &stream(ADMIT, None)).expect("held");
         assert_eq!(by_look.map(Shape::technology), Some("hl7-er7"));
-        assert!(message::choose(&shapes, &stream(b"STX=", None)).is_none());
+        assert!(
+            message::choose(&shapes, &stream(b"STX=", None))
+                .expect("held")
+                .is_none()
+        );
     }
 }
