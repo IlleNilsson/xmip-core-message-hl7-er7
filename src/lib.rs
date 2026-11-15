@@ -5,15 +5,17 @@
 //! `OBX` — in the order they lie. The delimiters are the ones `MSH`
 //! announces: the field separator is its fourth character and the component
 //! separator the first of the encoding characters that follow. A segment
-//! ends at a carriage return, as the standard says; a message with no
-//! carriage return at all is read with the line feed instead, because that
-//! is how such messages arrive. The announced type is MSH-9: the message
+//! ends at a carriage return, as the standard says, and at a line feed
+//! too, because that is how such messages arrive; an empty line is no
+//! segment, and nothing but line breaks stands between two. The announced
+//! type is MSH-9: the message
 //! structure when the third component gives it, else the message code and
 //! trigger event joined by an underscore — `ADT_A01`, `ORU_R01` — else the
 //! code alone (ADR-0047).
 //!
-//! The walk is the Foundation's `message::segment`: this shape reads the
-//! head and brings the delimiters. A contract checks everything else.
+//! The walk is the Foundation's `message::segment`, the one the HL7 v2
+//! contract reads by too: this shape reads the head and brings the
+//! delimiters. A contract checks everything else.
 
 use message::segment::{self, Delimiters};
 use message::{Shape, ShapeError, Shaped};
@@ -23,9 +25,8 @@ use stream::Stream;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Er7;
 
-/// The delimiters `MSH` announces: its field separator, its component
-/// separator, and the carriage return — or the line feed where there is no
-/// carriage return.
+/// The delimiters `MSH` announces: its field separator and its component
+/// separator, a segment ended by every line break.
 ///
 /// # Errors
 /// No `MSH` at the head, or one shorter than its encoding characters.
@@ -39,8 +40,7 @@ pub fn delimiters(bytes: &[u8]) -> Result<Delimiters, ShapeError> {
                 .at(bytes.len()),
         );
     };
-    let terminator = if bytes.contains(&b'\r') { b'\r' } else { b'\n' };
-    Ok(Delimiters::new(terminator, head[0], head[1]))
+    Ok(Delimiters::new(b'\r', head[0], head[1]).ended_by_line_breaks())
 }
 
 /// MSH-9 as a name: the structure, else code and event joined, else the
@@ -141,13 +141,25 @@ PV1|1|I|W1^B2^1\r";
         assert_eq!(shaped.parts.len(), 2);
         assert_eq!(shaped.parts[1].name.as_deref(), Some("OBX"));
         assert_eq!(shaped.message_type.as_deref(), Some("ORU_R01"));
-        assert_eq!(delimiters(other), Ok(Delimiters::new(b'\r', b'#', b'*')));
+        assert_eq!(
+            delimiters(other),
+            Ok(Delimiters::new(b'\r', b'#', b'*').ended_by_line_breaks())
+        );
 
         let by_line_feed = b"MSH|^~\\&|A|B|C|D|20240101||ACK|1|P|2.5\nMSA|AA|1\n";
         let shaped = Er7.shape(&stream(by_line_feed, None)).expect("well-formed");
         assert_eq!(shaped.parts.len(), 2);
         assert_eq!(shaped.parts[1].bytes, b"MSA|AA|1");
         assert_eq!(shaped.message_type.as_deref(), Some("ACK"));
+
+        let mixed = b"MSH|^~\\&|A|B|C|D|20240101||ACK|1|P|2.5\rMSA|AA|1\n\nERR|1\r";
+        let shaped = Er7.shape(&stream(mixed, None)).expect("well-formed");
+        let names: Vec<&str> = shaped
+            .parts
+            .iter()
+            .filter_map(|p| p.name.as_deref())
+            .collect();
+        assert_eq!(names, ["MSH", "MSA", "ERR"], "every line break ends one");
 
         let untyped = b"MSH|^~\\&|A|B|C|D|20240101|||1|P|2.5\r";
         let shaped = Er7.shape(&stream(untyped, None)).expect("well-formed");
@@ -172,6 +184,12 @@ PV1|1|I|W1^B2^1\r";
             .expect_err("no terminator");
         assert_eq!(cut.offset, Some(43));
         assert_eq!(cut.reason, "a segment without its terminator");
+
+        let spaced = Er7
+            .shape(&stream(b"MSH|^~\\&|A|B\r PID|1\r", None))
+            .expect_err("only line breaks stand between segments");
+        assert_eq!(spaced.offset, Some(13));
+        assert_eq!(spaced.reason, "a segment without a tag");
     }
 
     #[test]
