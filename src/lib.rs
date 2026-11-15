@@ -15,7 +15,9 @@
 //!
 //! The walk is the Foundation's `message::segment`, the one the HL7 v2
 //! contract reads by too: this shape reads the head and brings the
-//! delimiters. A contract checks everything else.
+//! delimiters. A contract checks everything else. The `MSH` is read here
+//! once ([`encoding`]), and the HL7 v2 contract reads a message's head by
+//! it too (ADR-0044, amendment 2026-11-15).
 
 use message::segment::{self, Delimiters};
 use message::{Shape, ShapeError, Shaped};
@@ -25,22 +27,47 @@ use stream::Stream;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Er7;
 
-/// The delimiters `MSH` announces: its field separator and its component
-/// separator, a segment ended by every line break.
+/// MSH-1 and MSH-2, the encoding characters, as the `MSH` at the head of
+/// `bytes` declares them: the field separator, then the component,
+/// repetition, escape and subcomponent characters. The walk reads bytes, so
+/// each is ASCII, and none of MSH-2's four is the field separator.
 ///
 /// # Errors
-/// No `MSH` at the head, or one shorter than its encoding characters.
-pub fn delimiters(bytes: &[u8]) -> Result<Delimiters, ShapeError> {
+/// No `MSH` at the head, one shorter than its encoding characters, or one
+/// with a field separator or an encoding character outside ASCII, or an
+/// encoding character that is its field separator.
+pub fn encoding(bytes: &[u8]) -> Result<[u8; 5], ShapeError> {
+    let refused = |reason: &str, at: usize| Err(ShapeError::new("hl7-er7", reason).at(at));
+    let short = "an MSH shorter than its encoding characters";
     if !bytes.starts_with(b"MSH") {
-        return Err(ShapeError::new("hl7-er7", "no MSH at the head").at(0));
+        return refused("no MSH at the head", 0);
     }
-    let Some(head) = bytes.get(3..8) else {
-        return Err(
-            ShapeError::new("hl7-er7", "an MSH shorter than its encoding characters")
-                .at(bytes.len()),
-        );
+    let Some(&field) = bytes.get(3) else {
+        return refused(short, bytes.len());
     };
-    Ok(Delimiters::new(b'\r', head[0], head[1]).ended_by_line_breaks())
+    if !field.is_ascii() {
+        return refused("an MSH with a field separator outside ASCII", 3);
+    }
+    let Some(&[component, repetition, escape, subcomponent]) = bytes.get(4..8) else {
+        return refused(short, bytes.len());
+    };
+    let declared = [component, repetition, escape, subcomponent];
+    if let Some(at) = declared.iter().position(|byte| !byte.is_ascii()) {
+        return refused("an MSH with an encoding character outside ASCII", 4 + at);
+    }
+    if let Some(at) = declared.iter().position(|&byte| byte == field) {
+        let reason = "an MSH with an encoding character that is its field separator";
+        return refused(reason, 4 + at);
+    }
+    Ok([field, component, repetition, escape, subcomponent])
+}
+
+/// What the walk cuts ER7 by, given the encoding characters [`encoding`]
+/// read: the field separator and the component separator, a segment ended
+/// by every line break.
+#[must_use]
+pub const fn delimiters(encoding: [u8; 5]) -> Delimiters {
+    Delimiters::new(b'\r', encoding[0], encoding[1]).ended_by_line_breaks()
 }
 
 /// MSH-9 as a name: the structure, else code and event joined, else the
@@ -79,7 +106,7 @@ impl Shape for Er7 {
 
     fn shape(&self, stream: &Stream) -> Result<Shaped, ShapeError> {
         let bytes = message::loaded(self.technology(), stream)?;
-        let delimiters = delimiters(bytes)?;
+        let delimiters = delimiters(encoding(bytes)?);
         let segments = segment::segments(bytes, &delimiters)
             .map_err(|stop| ShapeError::refused("hl7-er7", stop))?;
         let message_type =
@@ -141,8 +168,9 @@ PV1|1|I|W1^B2^1\r";
         assert_eq!(shaped.parts.len(), 2);
         assert_eq!(shaped.parts[1].name.as_deref(), Some("OBX"));
         assert_eq!(shaped.message_type.as_deref(), Some("ORU_R01"));
+        assert_eq!(encoding(other), Ok(*b"#*~\\&"));
         assert_eq!(
-            delimiters(other),
+            encoding(other).map(delimiters),
             Ok(Delimiters::new(b'\r', b'#', b'*').ended_by_line_breaks())
         );
 
@@ -175,6 +203,16 @@ PV1|1|I|W1^B2^1\r";
         let short = Er7.shape(&stream(b"MSH|^~", None)).expect_err("short");
         assert_eq!(short.offset, Some(6));
         assert_eq!(short.reason, "an MSH shorter than its encoding characters");
+        let refused = |head: &[u8]| encoding(head).map_err(|e| (e.reason, e.offset));
+        let at = |reason: &str, at| Err((reason.to_string(), Some(at)));
+        let shorter = "an MSH shorter than its encoding characters";
+        assert_eq!(refused(b"MSH"), at(shorter, 3));
+        let wide = "an MSH with a field separator outside ASCII";
+        assert_eq!(refused("MSH\u{e9}^~\\&\u{e9}A\r".as_bytes()), at(wide, 3));
+        let outside = "an MSH with an encoding character outside ASCII";
+        assert_eq!(refused("MSH|^~\\\u{e9}|A\r".as_bytes()), at(outside, 7));
+        let repeated = "an MSH with an encoding character that is its field separator";
+        assert_eq!(refused(b"MSH|^~|&|A\r"), at(repeated, 6));
 
         let cut = Er7
             .shape(&stream(
